@@ -1,0 +1,12 @@
+from pathlib import Path
+base = Path('/home/user/dai-doce-app/dist')
+html = (base / 'index.html').read_text()
+css = (base / 'assets/index-kKsSapkK.css').read_text()
+js = (base / 'assets/index-BO80i8G0.js').read_text()
+svg = (base / 'favicon.svg').read_text()
+html = html.replace('<link rel="icon" type="image/svg+xml" href="./favicon.svg" />', f'<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,{svg}">')
+html = html.replace('<script type="module" crossorigin src="./assets/index-BO80i8G0.js"></script>', f'<script type="module">\n{js}\n</script>')
+html = html.replace('<link rel="stylesheet" crossorigin href="./assets/index-kKsSapkK.css">', f'<style>\n{css}\n</style>')
+html = html.replace('<link rel="manifest" href="./manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="./registerSW.js"></script>', '')
+(base / 'standalone.html').write_text(html)
+print(base / 'standalone.html')

@@ -1,14 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import {
-  HashRouter,
-  NavLink,
-  Navigate,
-  Route,
-  Routes,
-  useNavigate,
-} from 'react-router-dom';
-import {
   BadgeDollarSign,
   BookOpen,
   Crown,
@@ -17,11 +9,21 @@ import {
   LogOut,
   Menu,
   Package,
+  Pencil,
   Settings,
   Sparkles,
+  Trash2,
   TrendingUp,
   X,
 } from 'lucide-react';
+import {
+  HashRouter,
+  NavLink,
+  Navigate,
+  Route,
+  Routes,
+  useNavigate,
+} from 'react-router-dom';
 
 type PurchaseUnit = 'g' | 'kg' | 'ml' | 'l' | 'un';
 type YieldUnit = 'un' | 'fatia' | 'pote' | 'kg';
@@ -308,6 +310,27 @@ function calcPricing(recipe: Recipe | undefined, rule: PricingRule) {
   return { ingredientCost, withLoss, suggested, profit };
 }
 
+function recomputeRecipe(recipe: Recipe, ingredients: Ingredient[]) {
+  const items = recipe.items.map((item) => {
+    const ingredient = ingredients.find((entry) => entry.id === item.ingredientId);
+    const unitCostSnapshot = ingredient?.unitCost ?? item.unitCostSnapshot;
+    const ingredientName = ingredient?.name ?? item.ingredientName;
+    const totalCost = convertToIngredientBase(item.quantityUsed, item.unitUsed) * unitCostSnapshot;
+    return {
+      ...item,
+      ingredientName,
+      unitCostSnapshot,
+      totalCost,
+    };
+  });
+
+  return {
+    ...recipe,
+    items,
+    totalIngredientCost: items.reduce((sum, item) => sum + item.totalCost, 0),
+  };
+}
+
 type AppShellProps = {
   user: AppUser;
   state: AppState;
@@ -347,6 +370,7 @@ function AppLayout({ user, state, onLogout, updateState, updateUser }: AppShellP
     ['/premium', 'Premium', Crown],
     ['/configuracoes', 'Configurações', Settings],
   ] as const;
+  const footerItems = navItems.slice(1, 5);
 
   return (
     <div className="app-shell">
@@ -416,6 +440,15 @@ function AppLayout({ user, state, onLogout, updateState, updateUser }: AppShellP
           <Route path="/configuracoes" element={<SettingsPage user={user} state={state} updateState={updateState} updateUser={updateUser} />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+
+        <nav className="mobile-footer-shortcuts">
+          {footerItems.map(([to, label, Icon]) => (
+            <NavLink key={to} to={to} className={({ isActive }) => `footer-shortcut ${isActive ? 'active' : ''}`}>
+              <Icon size={18} />
+              <span>{label}</span>
+            </NavLink>
+          ))}
+        </nav>
       </main>
     </div>
   );
@@ -448,8 +481,8 @@ function DashboardPage({ user, state }: { user: AppUser; state: AppState }) {
         <MetricCard title="Último lucro estimado" value={latestSimulation ? currency(latestSimulation.estimatedProfit) : '—'} hint="simulação mais recente" />
       </div>
 
-      <div className="two-columns">
-        <div className="card">
+      <div className="two-columns dashboard-summary-grid">
+        <div className="card desktop-quick-shortcuts">
           <div className="card-head">
             <h4>Atalhos rápidos</h4>
           </div>
@@ -493,7 +526,8 @@ function DashboardPage({ user, state }: { user: AppUser; state: AppState }) {
 }
 
 function IngredientsPage({ state, updateState }: { state: AppState; updateState: AppShellProps['updateState'] }) {
-  const [form, setForm] = useState({
+  const emptyForm = {
+    id: '',
     name: '',
     category: '',
     purchaseQuantity: '1',
@@ -501,12 +535,18 @@ function IngredientsPage({ state, updateState }: { state: AppState; updateState:
     purchasePrice: '',
     supplier: '',
     notes: '',
-  });
+  };
+  const [form, setForm] = useState(emptyForm);
+  const editingIngredientId = form.id;
+
+  function resetForm() {
+    setForm(emptyForm);
+  }
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const ingredient: Ingredient = {
-      id: uid(),
+      id: editingIngredientId || uid(),
       name: form.name,
       category: form.category,
       purchaseQuantity: number(form.purchaseQuantity),
@@ -515,23 +555,64 @@ function IngredientsPage({ state, updateState }: { state: AppState; updateState:
       supplier: form.supplier,
       notes: form.notes,
       unitCost: calcUnitCost(number(form.purchasePrice), number(form.purchaseQuantity), form.purchaseUnit),
-      createdAt: now(),
+      createdAt: editingIngredientId ? state.ingredients.find((entry) => entry.id === editingIngredientId)?.createdAt || now() : now(),
     };
 
+    updateState((current) => {
+      const ingredients = editingIngredientId
+        ? current.ingredients.map((entry) => (entry.id === editingIngredientId ? ingredient : entry))
+        : [ingredient, ...current.ingredients];
+      const recipes = current.recipes.map((recipe) => recomputeRecipe(recipe, ingredients));
+      return {
+        ...current,
+        ingredients,
+        recipes,
+        activityLogs: [
+          createLog('ingredient', editingIngredientId ? 'updated' : 'created', `Ingrediente ${ingredient.name} ${editingIngredientId ? 'atualizado' : 'cadastrado'}.`),
+          ...current.activityLogs,
+        ],
+      };
+    });
+
+    resetForm();
+  }
+
+  function startEdit(ingredient: Ingredient) {
+    setForm({
+      id: ingredient.id,
+      name: ingredient.name,
+      category: ingredient.category,
+      purchaseQuantity: String(ingredient.purchaseQuantity),
+      purchaseUnit: ingredient.purchaseUnit,
+      purchasePrice: String(ingredient.purchasePrice),
+      supplier: ingredient.supplier,
+      notes: ingredient.notes,
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function removeIngredient(ingredient: Ingredient) {
+    const isUsed = state.recipes.some((recipe) => recipe.items.some((item) => item.ingredientId === ingredient.id));
+    if (isUsed) {
+      window.alert('Esse ingrediente está em uma receita cadastrada. Edite ou exclua a receita antes de remover o ingrediente.');
+      return;
+    }
+    const confirmed = window.confirm(`Deseja excluir o ingrediente ${ingredient.name}?`);
+    if (!confirmed) return;
     updateState((current) => ({
       ...current,
-      ingredients: [ingredient, ...current.ingredients],
-      activityLogs: [createLog('ingredient', 'created', `Ingrediente ${ingredient.name} cadastrado.`), ...current.activityLogs],
+      ingredients: current.ingredients.filter((entry) => entry.id !== ingredient.id),
+      activityLogs: [createLog('ingredient', 'updated', `Ingrediente ${ingredient.name} excluído.`), ...current.activityLogs],
     }));
-
-    setForm({ name: '', category: '', purchaseQuantity: '1', purchaseUnit: 'kg', purchasePrice: '', supplier: '', notes: '' });
+    if (editingIngredientId === ingredient.id) resetForm();
   }
 
   return (
     <section className="page-grid two-columns-layout">
       <div className="card">
         <div className="card-head">
-          <h4>Novo ingrediente</h4>
+          <h4>{editingIngredientId ? 'Editar ingrediente' : 'Novo ingrediente'}</h4>
+          {editingIngredientId && <button className="ghost small-button" type="button" onClick={resetForm}>Cancelar edição</button>}
         </div>
         <form className="form-grid" onSubmit={handleSubmit}>
           <Field label="Nome"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></Field>
@@ -549,7 +630,7 @@ function IngredientsPage({ state, updateState }: { state: AppState; updateState:
           <Field label="Preço pago"><input type="number" step="0.01" value={form.purchasePrice} onChange={(e) => setForm({ ...form, purchasePrice: e.target.value })} required /></Field>
           <Field label="Fornecedor"><input value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} /></Field>
           <Field label="Observações"><textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} rows={4} /></Field>
-          <button className="primary" type="submit">Salvar ingrediente</button>
+          <button className="primary" type="submit">{editingIngredientId ? 'Salvar alterações' : 'Salvar ingrediente'}</button>
         </form>
       </div>
 
@@ -570,6 +651,10 @@ function IngredientsPage({ state, updateState }: { state: AppState; updateState:
                 <small>
                   custo unitário: {currency(ingredient.unitCost)} / {ingredient.purchaseUnit === 'kg' ? 'g' : ingredient.purchaseUnit === 'l' ? 'ml' : ingredient.purchaseUnit}
                 </small>
+                <div className="row-actions">
+                  <button className="ghost small-button" type="button" onClick={() => startEdit(ingredient)}><Pencil size={14} /> Editar</button>
+                  <button className="ghost small-button danger-text" type="button" onClick={() => removeIngredient(ingredient)}><Trash2 size={14} /> Excluir</button>
+                </div>
               </div>
             </article>
           ))}
@@ -580,9 +665,17 @@ function IngredientsPage({ state, updateState }: { state: AppState; updateState:
 }
 
 function RecipesPage({ state, updateState }: { state: AppState; updateState: AppShellProps['updateState'] }) {
-  const [form, setForm] = useState({ name: '', category: '', yieldQuantity: '1', yieldUnit: 'un' as YieldUnit, preparationNotes: '' });
+  const emptyForm = { id: '', name: '', category: '', yieldQuantity: '1', yieldUnit: 'un' as YieldUnit, preparationNotes: '' };
+  const [form, setForm] = useState(emptyForm);
   const [itemDraft, setItemDraft] = useState({ ingredientId: '', quantityUsed: '1', unitUsed: 'g' as PurchaseUnit });
   const [items, setItems] = useState<RecipeItem[]>([]);
+  const editingRecipeId = form.id;
+
+  function resetForm() {
+    setForm(emptyForm);
+    setItems([]);
+    setItemDraft({ ingredientId: '', quantityUsed: '1', unitUsed: 'g' });
+  }
 
   function addItem() {
     const ingredient = state.ingredients.find((entry) => entry.id === itemDraft.ingredientId);
@@ -605,11 +698,41 @@ function RecipesPage({ state, updateState }: { state: AppState; updateState: App
     setItemDraft({ ingredientId: '', quantityUsed: '1', unitUsed: 'g' });
   }
 
+  function removeItem(itemId: string) {
+    setItems((current) => current.filter((item) => item.id !== itemId));
+  }
+
+  function startEdit(recipe: Recipe) {
+    setForm({
+      id: recipe.id,
+      name: recipe.name,
+      category: recipe.category,
+      yieldQuantity: String(recipe.yieldQuantity),
+      yieldUnit: recipe.yieldUnit,
+      preparationNotes: recipe.preparationNotes,
+    });
+    setItems(recipe.items.map((item) => ({ ...item })));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function removeRecipe(recipe: Recipe) {
+    const confirmed = window.confirm(`Deseja excluir a receita ${recipe.name}?`);
+    if (!confirmed) return;
+    updateState((current) => ({
+      ...current,
+      recipes: current.recipes.filter((entry) => entry.id !== recipe.id),
+      pricingSnapshots: current.pricingSnapshots.filter((entry) => entry.recipeId !== recipe.id),
+      simulations: current.simulations.filter((entry) => entry.recipeId !== recipe.id),
+      activityLogs: [createLog('recipe', 'updated', `Receita ${recipe.name} excluída.`), ...current.activityLogs],
+    }));
+    if (editingRecipeId === recipe.id) resetForm();
+  }
+
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!items.length) return;
     const recipe: Recipe = {
-      id: uid(),
+      id: editingRecipeId || uid(),
       name: form.name,
       category: form.category,
       yieldQuantity: number(form.yieldQuantity),
@@ -617,24 +740,29 @@ function RecipesPage({ state, updateState }: { state: AppState; updateState: App
       preparationNotes: form.preparationNotes,
       totalIngredientCost: items.reduce((sum, item) => sum + item.totalCost, 0),
       items,
-      createdAt: now(),
+      createdAt: editingRecipeId ? state.recipes.find((entry) => entry.id === editingRecipeId)?.createdAt || now() : now(),
     };
 
     updateState((current) => ({
       ...current,
-      recipes: [recipe, ...current.recipes],
-      activityLogs: [createLog('recipe', 'created', `Receita ${recipe.name} cadastrada.`), ...current.activityLogs],
+      recipes: editingRecipeId ? current.recipes.map((entry) => (entry.id === editingRecipeId ? recipe : entry)) : [recipe, ...current.recipes],
+      pricingSnapshots: current.pricingSnapshots.map((entry) => (entry.recipeId === recipe.id ? { ...entry, recipeName: recipe.name, ingredientCost: recipe.totalIngredientCost } : entry)),
+      simulations: current.simulations.map((entry) => (entry.recipeId === recipe.id ? { ...entry, recipeName: recipe.name } : entry)),
+      activityLogs: [
+        createLog('recipe', editingRecipeId ? 'updated' : 'created', `Receita ${recipe.name} ${editingRecipeId ? 'atualizada' : 'cadastrada'}.`),
+        ...current.activityLogs,
+      ],
     }));
 
-    setForm({ name: '', category: '', yieldQuantity: '1', yieldUnit: 'un', preparationNotes: '' });
-    setItems([]);
+    resetForm();
   }
 
   return (
     <section className="page-grid two-columns-layout">
       <div className="card">
         <div className="card-head">
-          <h4>Nova receita</h4>
+          <h4>{editingRecipeId ? 'Editar receita' : 'Nova receita'}</h4>
+          {editingRecipeId && <button className="ghost small-button" type="button" onClick={resetForm}>Cancelar edição</button>}
         </div>
         <form className="form-grid" onSubmit={handleSubmit}>
           <Field label="Nome da receita"><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></Field>
@@ -676,13 +804,16 @@ function RecipesPage({ state, updateState }: { state: AppState; updateState: App
                 <div key={item.id} className="mini-row">
                   <span>{item.ingredientName}</span>
                   <span>{item.quantityUsed} {item.unitUsed}</span>
-                  <strong>{currency(item.totalCost)}</strong>
+                  <div className="mini-row-actions">
+                    <strong>{currency(item.totalCost)}</strong>
+                    <button className="ghost small-button danger-text" type="button" onClick={() => removeItem(item.id)}><Trash2 size={14} /></button>
+                  </div>
                 </div>
               ))}
               {!items.length && <p className="muted">Adicione ingredientes para montar a ficha técnica.</p>}
             </div>
           </div>
-          <button className="primary" type="submit">Salvar receita</button>
+          <button className="primary" type="submit">{editingRecipeId ? 'Salvar alterações' : 'Salvar receita'}</button>
         </form>
       </div>
 
@@ -701,6 +832,10 @@ function RecipesPage({ state, updateState }: { state: AppState; updateState: App
               <div className="aligned-right">
                 <strong>{currency(recipe.totalIngredientCost)}</strong>
                 <small>custo dos ingredientes</small>
+                <div className="row-actions">
+                  <button className="ghost small-button" type="button" onClick={() => startEdit(recipe)}><Pencil size={14} /> Editar</button>
+                  <button className="ghost small-button danger-text" type="button" onClick={() => removeRecipe(recipe)}><Trash2 size={14} /> Excluir</button>
+                </div>
               </div>
             </article>
           ))}
